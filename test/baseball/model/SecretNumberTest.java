@@ -65,6 +65,17 @@ class SecretNumberTest {
         assertFalse(new GuessResult(2, 0).isCorrect());
         assertEquals("1S 2B", new GuessResult(1, 2).toString());
     }
+    
+    /** 일치하는 숫자가 없으면 OUT!!으로 표시되는지 검증한다. */
+    @Test
+    @DisplayName("스트라이크와 볼이 모두 0이면 OUT!!으로 표시한다")
+    void outWhenNothingMatches() {
+        GuessResult r = SecretNumber.parse("123").judge(SecretNumber.parse("456"));
+        assertTrue(r.isOut());
+        assertEquals("OUT!!", r.toString());
+        assertFalse(new GuessResult(0, 1).isOut());
+        assertFalse(new GuessResult(1, 0).isOut());
+    }
 
     /**
      * 임의 생성 숫자가 항상 형식 규칙을 만족하는지 검증한다.
