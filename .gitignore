@@ -1,0 +1,10 @@
+# 컴파일 결과
+bin/
+*.class
+
+# 실행하면 생기는 전적 파일
+stats.csv
+
+# 운영체제가 만드는 파일
+Thumbs.db
+.DS_Store
