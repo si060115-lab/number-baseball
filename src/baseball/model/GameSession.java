@@ -9,9 +9,14 @@ import java.util.function.Consumer;
 /**
  * 한 판의 게임 진행 상태와 규칙을 관리한다.
  * 화면과 독립적으로 동작하며, 상태 변화는 GameListener를 통해 알린다.
- * 현재는 PvE 모드와 1:1 PvP 모드를 지원하며, 다인 PvP 모드는 5단계에서 추가한다.
+ * PvE, 1:1 PvP, 다인 PvP 모드를 지원한다.
  */
 public class GameSession {
+    /** 기권 사유 */
+    public static final String REASON_GIVE_UP = "기권";
+    /** 제한 시간 초과 사유 */
+    public static final String REASON_TIMEOUT = "시간 초과";
+
     private final GameMode mode;
     /** 참가 유저 (컴퓨터 제외, 입력 순서 유지) */
     private final List<Player> players;
@@ -36,15 +41,11 @@ public class GameSession {
      * @param mode    게임 모드
      * @param players 참가 유저 목록
      * @param rnd     난수 생성기 (테스트 시 시드 고정용)
-     * @throws IllegalArgumentException      참가 인원이 모드의 허용 범위를 벗어난 경우
-     * @throws UnsupportedOperationException 아직 구현하지 않은 모드인 경우
+     * @throws IllegalArgumentException 참가 인원이 모드의 허용 범위를 벗어난 경우
      */
     public GameSession(GameMode mode, List<Player> players, Random rnd) {
         if (!mode.isValidPlayerCount(players.size())) {
             throw new IllegalArgumentException(mode + " 참가 인원이 올바르지 않습니다: " + players.size() + "명");
-        }
-        if (mode == GameMode.MULTI) {
-            throw new UnsupportedOperationException("아직 지원하지 않는 모드입니다: " + mode);
         }
         this.mode = mode;
         this.players = List.copyOf(players);
@@ -137,7 +138,7 @@ public class GameSession {
      * PvE 모드는 컴퓨터만, 그 외 모드는 자기 자신과 탈락한 유저를 제외한 유저를 반환한다.
      *
      * @param attacker 현재 턴의 유저
-     * @return 지목 가능한 상대 목록
+     * @return 지목 가능한 상대 목록 (입력 순서)
      */
     public List<Player> getTargets(Player attacker) {
         if (mode == GameMode.PVE) {
@@ -155,6 +156,7 @@ public class GameSession {
     /**
      * 현재 턴의 유저가 상대의 숫자를 추측한 결과를 처리한다. (함수 명세: guess)
      * 형식 오류인 경우 상태를 변경하지 않으므로 턴과 시도 횟수가 그대로 유지된다.
+     * 정답이면 PvE·1:1 PvP는 승리, 다인 PvP는 상대 탈락 후 1명이 남으면 우승으로 처리한다.
      *
      * @param attacker 추측하는 유저
      * @param target   지목된 상대
@@ -166,9 +168,7 @@ public class GameSession {
      */
     public GuessResult guess(Player attacker, Player target, String input) {
         requirePhase(GamePhase.PLAYING);
-        if (attacker != getCurrentPlayer()) {
-            throw new IllegalStateException(attacker.getName() + "의 턴이 아닙니다.");
-        }
+        requireTurn(attacker);
         if (!getTargets(attacker).contains(target)) {
             throw new IllegalArgumentException("지목할 수 없는 상대입니다: " + target.getName());
         }
@@ -184,8 +184,16 @@ public class GameSession {
         fire(l -> l.onGuessJudged(attacker, target, guessText, result));
 
         if (result.isCorrect()) {
-            // PvE·1:1 PvP: 상대의 숫자를 맞힌 유저가 승리한다. 다인 PvP 모드의 탈락 처리는 5단계에서 추가한다.
-            finish(attacker);
+            if (mode == GameMode.MULTI) {
+                // 다인 PvP: 숫자를 맞힌 상대를 탈락시키고, 1명만 남으면 우승 처리한다.
+                eliminate(target, attacker.getName() + "님이 숫자를 맞힘");
+                if (!finishIfLastSurvivor()) {
+                    nextTurn();
+                }
+            } else {
+                // PvE·1:1 PvP: 상대의 숫자를 맞힌 유저가 승리한다.
+                finish(attacker);
+            }
         } else if (mode == GameMode.PVE && attempts >= GameRules.PVE_MAX_ATTEMPTS) {
             // PvE: 시도 횟수를 모두 사용하면 실패
             finish(null);
@@ -193,6 +201,32 @@ public class GameSession {
             nextTurn();
         }
         return result;
+    }
+
+    /**
+     * 현재 턴의 유저가 기권하거나 제한 시간을 초과한 경우를 처리한다. (함수 명세: giveUp)
+     * PvE는 실패, 1:1 PvP는 상대 승리, 다인 PvP는 본인 탈락으로 처리한다.
+     * 다인 PvP에서 탈락 후 1명이 남으면 그 유저가 우승하고, 아니면 다음 유저에게 턴을 넘긴다.
+     *
+     * @param player 기권하거나 시간을 초과한 유저
+     * @param reason 사유 (REASON_GIVE_UP 또는 REASON_TIMEOUT)
+     * @throws IllegalStateException 진행 중이 아니거나 player의 턴이 아닌 경우
+     */
+    public void giveUp(Player player, String reason) {
+        requirePhase(GamePhase.PLAYING);
+        requireTurn(player);
+        fire(l -> l.onGaveUp(player, reason));
+
+        switch (mode) {
+            case PVE -> finish(null);
+            case DUEL -> finish(getTargets(player).get(0));
+            case MULTI -> {
+                eliminate(player, reason);
+                if (!finishIfLastSurvivor()) {
+                    nextTurn();
+                }
+            }
+        }
     }
 
     /** @return 게임 모드 */
@@ -208,6 +242,28 @@ public class GameSession {
     /** @return 참가 유저 목록 (입력 순서, 수정 불가) */
     public List<Player> getPlayers() {
         return players;
+    }
+
+    /** @return 탈락하지 않은 유저 목록 (입력 순서) */
+    public List<Player> getAlivePlayers() {
+        List<Player> alive = new ArrayList<>();
+        for (Player p : players) {
+            if (p.isAlive()) {
+                alive.add(p);
+            }
+        }
+        return alive;
+    }
+
+    /** @return 탈락한 유저 목록 (입력 순서) */
+    public List<Player> getEliminatedPlayers() {
+        List<Player> eliminated = new ArrayList<>();
+        for (Player p : players) {
+            if (!p.isAlive()) {
+                eliminated.add(p);
+            }
+        }
+        return eliminated;
     }
 
     /** @return 턴 순서대로 정렬된 유저 목록 (수정 불가) */
@@ -241,8 +297,33 @@ public class GameSession {
     }
 
     /**
+     * 참가자를 탈락시키고 탈락 이벤트를 알린다.
+     *
+     * @param player 탈락할 참가자
+     * @param reason 탈락 사유
+     */
+    private void eliminate(Player player, String reason) {
+        player.eliminate();
+        fire(l -> l.onEliminated(player, reason));
+    }
+
+    /**
+     * 생존 유저가 1명이면 그 유저를 우승자로 하여 게임을 종료한다.
+     *
+     * @return 게임을 종료했으면 true
+     */
+    private boolean finishIfLastSurvivor() {
+        List<Player> alive = getAlivePlayers();
+        if (alive.size() == 1) {
+            finish(alive.get(0));
+            return true;
+        }
+        return false;
+    }
+
+    /**
      * 다음 순서의 생존 유저에게 턴을 넘긴다.
-     * 진행 중에는 생존 유저가 항상 1명 이상이므로 반복이 종료된다.
+     * 진행 중에는 생존 유저가 항상 2명 이상이므로 반복이 종료된다.
      */
     private void nextTurn() {
         do {
@@ -277,6 +358,12 @@ public class GameSession {
     private void requirePhase(GamePhase expected) {
         if (phase != expected) {
             throw new IllegalStateException("현재 단계(" + phase + ")에서는 실행할 수 없습니다.");
+        }
+    }
+
+    private void requireTurn(Player player) {
+        if (player != getCurrentPlayer()) {
+            throw new IllegalStateException(player.getName() + "의 턴이 아닙니다.");
         }
     }
 }

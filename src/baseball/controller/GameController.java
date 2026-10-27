@@ -20,12 +20,13 @@ import javax.swing.SwingUtilities;
 
 /**
  * 화면 입력을 GameSession에 전달하고, GameSession의 이벤트를 화면에 반영한다.
- * 게임 시작, 비밀 숫자 설정, 턴 진행, 결과 표시, 무효 처리의 흐름을 담당한다.
- * 타이머와 전적 저장은 이후 단계에서 추가한다.
+ * 게임 시작, 비밀 숫자 설정, 턴 진행, 기권과 시간 초과, 결과 표시, 무효 처리의 흐름을 담당한다.
+ * 전적 저장은 7단계에서 추가한다.
  */
 public class GameController implements GameListener {
     private final MainFrame frame;
     private final GamePanel gamePanel;
+    private final TurnTimer turnTimer;
     private final Random random = new Random();
     private GameSession session;
 
@@ -36,6 +37,7 @@ public class GameController implements GameListener {
     public GameController(MainFrame frame, GamePanel gamePanel) {
         this.frame = frame;
         this.gamePanel = gamePanel;
+        this.turnTimer = new TurnTimer(gamePanel::showRemainingTime, this::onTimeout);
         gamePanel.setController(this);
     }
 
@@ -51,16 +53,7 @@ public class GameController implements GameListener {
         for (String name : names) {
             players.add(new Player(name));
         }
-
-        GameSession newSession;
-        try {
-            newSession = new GameSession(mode, players, random);
-        } catch (UnsupportedOperationException e) {
-            // 다인 PvP 모드는 5단계에서 구현한다.
-            JOptionPane.showMessageDialog(frame, e.getMessage(), "알림", JOptionPane.INFORMATION_MESSAGE);
-            return;
-        }
-        session = newSession;
+        session = new GameSession(mode, players, random);
         session.addListener(this);
 
         gamePanel.reset();
@@ -101,12 +94,12 @@ public class GameController implements GameListener {
 
     /**
      * 게임 화면에서 추측 숫자가 제출되었을 때 호출된다.
-     * 형식 오류는 경고 메시지로 표시하고 턴과 시도 횟수는 유지한다.
+     * 형식 오류는 경고 메시지로 표시하고 턴, 시도 횟수, 남은 시간은 유지한다.
      *
      * @param input 입력한 추측 숫자
      */
     public void onGuess(String input) {
-        if (session == null || session.getPhase() != GamePhase.PLAYING) {
+        if (!isPlaying()) {
             return;
         }
         Player attacker = session.getCurrentPlayer();
@@ -124,28 +117,60 @@ public class GameController implements GameListener {
         }
     }
 
+    /**
+     * 게임 화면에서 기권 버튼을 눌렀을 때 호출된다.
+     * 확인을 받은 뒤 현재 턴의 유저를 기권 처리한다.
+     */
+    public void onGiveUp() {
+        if (!isPlaying()) {
+            return;
+        }
+        Player player = session.getCurrentPlayer();
+        if (!gamePanel.confirmGiveUp(player.getName())) {
+            return;
+        }
+        // 확인 창이 열려 있는 동안 시간 초과로 턴이 넘어갔거나 게임이 끝났으면 기권하지 않는다.
+        if (!isPlaying() || session.getCurrentPlayer() != player) {
+            return;
+        }
+        session.giveUp(player, GameSession.REASON_GIVE_UP);
+    }
+
     @Override
     public void onTurnOrderDecided(List<Player> order) {
         if (session.getMode() == GameMode.PVE) {
             return;
         }
-        String text = "턴 순서: " + joinNames(order);
+        String text = "턴 순서: " + joinNames(order, " → ");
         gamePanel.appendLog("[시스템] " + text);
-        gamePanel.showStatus(text);
+        // 다인 PvP 모드의 상태 표시는 생존/탈락 유저로 사용하므로 1:1 PvP 모드에서만 턴 순서를 표시한다.
+        if (session.getMode() == GameMode.DUEL) {
+            gamePanel.showStatus(text);
+        }
     }
 
     @Override
     public void onTurnStarted(Player current) {
         gamePanel.showTurn(current);
-        if (session.getMode() == GameMode.PVE) {
-            gamePanel.hideTargets();
-            gamePanel.showStatus("남은 시도 " + session.getRemainingAttempts() + "/" + GameRules.PVE_MAX_ATTEMPTS);
-        } else {
-            // 1:1 PvP 모드는 상대가 고정되므로 선택할 수 없게 표시한다.
-            gamePanel.showTargets(session.getTargets(current), session.getMode() == GameMode.MULTI);
-            gamePanel.appendLog("[시스템] " + current.getName() + "님 차례입니다.");
+        switch (session.getMode()) {
+            case PVE -> {
+                gamePanel.hideTargets();
+                gamePanel.showStatus("남은 시도 " + session.getRemainingAttempts() + "/" + GameRules.PVE_MAX_ATTEMPTS);
+            }
+            case DUEL -> {
+                // 1:1 PvP 모드는 상대가 고정되므로 선택할 수 없게 표시한다.
+                gamePanel.showTargets(session.getTargets(current), false);
+                gamePanel.appendLog("[시스템] " + current.getName() + "님 차례입니다.");
+            }
+            case MULTI -> {
+                gamePanel.showTargets(session.getTargets(current), true);
+                gamePanel.showStatus(survivorText());
+                gamePanel.appendLog("[시스템] " + current.getName() + "님 차례입니다.");
+            }
         }
         gamePanel.setInputEnabled(true);
+        // 턴마다 제한 시간을 처음부터 다시 측정한다.
+        turnTimer.start();
     }
 
     @Override
@@ -154,18 +179,26 @@ public class GameController implements GameListener {
     }
 
     @Override
+    public void onGaveUp(Player player, String reason) {
+        gamePanel.appendLog("[시스템] " + player.getName() + "님 " + reason);
+    }
+
+    @Override
     public void onEliminated(Player player, String reason) {
-        gamePanel.appendLog("[시스템] " + player.getName() + " 탈락 (" + reason + ")");
+        gamePanel.appendLog("[시스템] " + player.getName() + "님 탈락 (" + reason + ")");
     }
 
     @Override
     public void onFinished(Player winner) {
+        turnTimer.stop();
         gamePanel.setInputEnabled(false);
         String message;
-        if (winner != null) {
-            message = winner.getName() + "님 승리!";
-        } else {
+        if (winner == null) {
             message = "실패! 정답은 " + session.getComputer().getSecret() + "입니다.";
+        } else if (session.getMode() == GameMode.MULTI) {
+            message = winner.getName() + "님 우승!";
+        } else {
+            message = winner.getName() + "님 승리!";
         }
         gamePanel.appendLog("[시스템] " + message);
         // 판정 처리가 모두 끝난 뒤 결과 창을 띄우기 위해 이벤트 큐에 등록한다.
@@ -174,6 +207,7 @@ public class GameController implements GameListener {
 
     @Override
     public void onAborted() {
+        turnTimer.stop();
         gamePanel.setInputEnabled(false);
         gamePanel.appendLog("[시스템] 게임이 무효 처리되었습니다.");
         SwingUtilities.invokeLater(() -> {
@@ -181,6 +215,19 @@ public class GameController implements GameListener {
                     "게임 무효", JOptionPane.INFORMATION_MESSAGE);
             showStartScreen();
         });
+    }
+
+    /** 제한 시간이 모두 지났을 때 TurnTimer가 호출한다. 현재 턴의 유저를 시간 초과로 처리한다. */
+    private void onTimeout() {
+        if (!isPlaying()) {
+            return;
+        }
+        session.giveUp(session.getCurrentPlayer(), GameSession.REASON_TIMEOUT);
+    }
+
+    /** @return 게임이 진행 중이면 true */
+    private boolean isPlaying() {
+        return session != null && session.getPhase() == GamePhase.PLAYING;
     }
 
     /**
@@ -209,13 +256,21 @@ public class GameController implements GameListener {
         showStartScreen();
     }
 
+    /** @return 다인 PvP 모드의 상태 표시 문구 (예: 생존: A, B   탈락: C) */
+    private String survivorText() {
+        List<Player> eliminated = session.getEliminatedPlayers();
+        String out = eliminated.isEmpty() ? "없음" : joinNames(eliminated, ", ");
+        return "생존: " + joinNames(session.getAlivePlayers(), ", ") + "   탈락: " + out;
+    }
+
     /**
-     * 유저 이름을 화살표로 연결한다.
+     * 유저 이름을 구분자로 연결한다.
      *
-     * @param players 유저 목록
-     * @return "홍길동 → 김철수" 형식의 문자열
+     * @param players   유저 목록
+     * @param delimiter 구분자
+     * @return 연결한 문자열
      */
-    private static String joinNames(List<Player> players) {
-        return players.stream().map(Player::getName).collect(Collectors.joining(" → "));
+    private static String joinNames(List<Player> players, String delimiter) {
+        return players.stream().map(Player::getName).collect(Collectors.joining(delimiter));
     }
 }

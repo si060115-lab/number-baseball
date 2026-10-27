@@ -37,7 +37,17 @@ public interface GameListener {
     }
 
     /**
-     * 참가자가 탈락했을 때 호출된다.
+     * 현재 턴의 유저가 기권하거나 제한 시간을 초과했을 때 호출된다.
+     * 이후 모드에 따라 탈락 이벤트나 종료 이벤트가 이어서 발생한다.
+     *
+     * @param player 기권하거나 시간을 초과한 유저
+     * @param reason 사유 (기권 또는 시간 초과)
+     */
+    default void onGaveUp(Player player, String reason) {
+    }
+
+    /**
+     * 참가자가 탈락했을 때 호출된다. 다인 PvP 모드에서만 발생한다.
      *
      * @param player 탈락한 참가자
      * @param reason 탈락 사유
