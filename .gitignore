@@ -1,9 +1,14 @@
 # 컴파일 결과
 bin/
+out/
 *.class
+
+# 배포용 실행 파일 (빌드할 때마다 새로 만듦)
+number-baseball.jar
 
 # 실행하면 생기는 전적 파일
 stats.csv
+*.tmp
 
 # 운영체제가 만드는 파일
 Thumbs.db

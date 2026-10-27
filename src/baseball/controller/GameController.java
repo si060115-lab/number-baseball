@@ -8,9 +8,11 @@ import baseball.model.GameSession;
 import baseball.model.GuessResult;
 import baseball.model.InvalidInputException;
 import baseball.model.Player;
+import baseball.stats.StatsRepository;
 import baseball.view.GamePanel;
 import baseball.view.MainFrame;
 import baseball.view.SecretInputDialog;
+import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
@@ -20,23 +22,27 @@ import javax.swing.SwingUtilities;
 
 /**
  * 화면 입력을 GameSession에 전달하고, GameSession의 이벤트를 화면에 반영한다.
- * 게임 시작, 비밀 숫자 설정, 턴 진행, 기권과 시간 초과, 결과 표시, 무효 처리의 흐름을 담당한다.
- * 전적 저장은 7단계에서 추가한다.
+ * 게임 시작, 비밀 숫자 설정, 턴 진행, 기권과 시간 초과, 결과 표시와 전적 저장, 무효 처리의 흐름을 담당한다.
  */
 public class GameController implements GameListener {
     private final MainFrame frame;
     private final GamePanel gamePanel;
+    private final StatsRepository statsRepository;
     private final TurnTimer turnTimer;
     private final Random random = new Random();
     private GameSession session;
+    /** 프로그램 종료로 인한 무효 처리 여부. true이면 무효 안내 창을 띄우지 않는다. */
+    private boolean exiting;
 
     /**
-     * @param frame     화면 전환과 대화상자의 부모 창으로 사용하는 메인 창
-     * @param gamePanel 게임 화면
+     * @param frame           화면 전환과 대화상자의 부모 창으로 사용하는 메인 창
+     * @param gamePanel       게임 화면
+     * @param statsRepository 게임 결과를 저장할 전적 저장소
      */
-    public GameController(MainFrame frame, GamePanel gamePanel) {
+    public GameController(MainFrame frame, GamePanel gamePanel, StatsRepository statsRepository) {
         this.frame = frame;
         this.gamePanel = gamePanel;
+        this.statsRepository = statsRepository;
         this.turnTimer = new TurnTimer(gamePanel::showRemainingTime, this::onTimeout);
         gamePanel.setController(this);
     }
@@ -61,8 +67,6 @@ public class GameController implements GameListener {
         frame.showGame();
 
         if (mode == GameMode.PVE) {
-            // 개발 확인용 정답 출력 (8단계에서 제거)
-            System.out.println("[디버그] 정답: " + session.getComputer().getSecret());
             session.startTurns();
         } else {
             // 게임 화면이 먼저 표시된 뒤 비밀 숫자 입력창을 띄우기 위해 이벤트 큐에 등록한다.
@@ -136,6 +140,39 @@ public class GameController implements GameListener {
         session.giveUp(player, GameSession.REASON_GIVE_UP);
     }
 
+    /**
+     * 게임이 진행 중인지 확인한다. 비밀 숫자 설정 단계도 진행 중으로 본다.
+     *
+     * @return 설정 단계이거나 턴 진행 중이면 true
+     */
+    public boolean isGameInProgress() {
+        return session != null
+                && (session.getPhase() == GamePhase.SETUP || session.getPhase() == GamePhase.PLAYING);
+    }
+
+    /**
+     * 메인 창의 닫기 요청을 처리한다.
+     * 게임이 진행 중이면 확인을 받은 뒤 무효 처리하며, 확인 창이 열려 있는 동안 제한 시간을 멈춘다.
+     *
+     * @return 프로그램을 종료해도 되면 true
+     */
+    public boolean handleWindowClosing() {
+        if (!isGameInProgress()) {
+            return true;
+        }
+        turnTimer.pause();
+        int choice = JOptionPane.showConfirmDialog(frame,
+                "게임이 진행 중입니다.\n지금 종료하면 이 게임은 무효 처리되어 전적에 반영되지 않습니다.\n종료하시겠습니까?",
+                "종료", JOptionPane.YES_NO_OPTION, JOptionPane.WARNING_MESSAGE);
+        if (choice != JOptionPane.YES_OPTION) {
+            turnTimer.resume();
+            return false;
+        }
+        exiting = true;
+        session.abort();
+        return true;
+    }
+
     @Override
     public void onTurnOrderDecided(List<Player> order) {
         if (session.getMode() == GameMode.PVE) {
@@ -192,23 +229,26 @@ public class GameController implements GameListener {
     public void onFinished(Player winner) {
         turnTimer.stop();
         gamePanel.setInputEnabled(false);
-        String message;
-        if (winner == null) {
-            message = "실패! 정답은 " + session.getComputer().getSecret() + "입니다.";
-        } else if (session.getMode() == GameMode.MULTI) {
-            message = winner.getName() + "님 우승!";
-        } else {
-            message = winner.getName() + "님 승리!";
-        }
+        String message = resultMessage(winner);
         gamePanel.appendLog("[시스템] " + message);
+
+        // 결과 창의 확인 여부와 관계없이 기록이 남도록 종료 즉시 저장한다. (유즈케이스 4)
+        if (!saveResult(winner)) {
+            message += "\n\n전적 저장에 실패하여 이번 결과는 전적에 반영되지 않았습니다.";
+        }
+        String dialogMessage = message;
         // 판정 처리가 모두 끝난 뒤 결과 창을 띄우기 위해 이벤트 큐에 등록한다.
-        SwingUtilities.invokeLater(() -> showResult(message));
+        SwingUtilities.invokeLater(() -> showResult(dialogMessage));
     }
 
     @Override
     public void onAborted() {
         turnTimer.stop();
         gamePanel.setInputEnabled(false);
+        if (exiting) {
+            // 프로그램 종료 중이므로 안내 창을 띄우지 않는다.
+            return;
+        }
         gamePanel.appendLog("[시스템] 게임이 무효 처리되었습니다.");
         SwingUtilities.invokeLater(() -> {
             JOptionPane.showMessageDialog(frame, "게임이 무효 처리되었습니다.\n시작 화면으로 돌아갑니다.",
@@ -225,9 +265,42 @@ public class GameController implements GameListener {
         session.giveUp(session.getCurrentPlayer(), GameSession.REASON_TIMEOUT);
     }
 
-    /** @return 게임이 진행 중이면 true */
+    /** @return 게임이 턴 진행 중이면 true */
     private boolean isPlaying() {
         return session != null && session.getPhase() == GamePhase.PLAYING;
+    }
+
+    /**
+     * 게임 결과를 전적에 저장한다. (함수 명세: recordResult)
+     * 저장에 실패해도 게임 진행에는 영향을 주지 않도록 예외를 기록으로만 남긴다.
+     *
+     * @param winner 승자. PvE 실패 시 null
+     * @return 저장에 성공했으면 true
+     */
+    private boolean saveResult(Player winner) {
+        try {
+            statsRepository.recordResult(session.getMode(), session.getPlayers(), winner);
+            return true;
+        } catch (UncheckedIOException e) {
+            gamePanel.appendLog("[시스템] " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * 모드와 승자에 맞는 결과 문구를 만든다.
+     *
+     * @param winner 승자. PvE 실패 시 null
+     * @return 결과 문구
+     */
+    private String resultMessage(Player winner) {
+        if (winner == null) {
+            return "실패! 정답은 " + session.getComputer().getSecret() + "입니다.";
+        }
+        if (session.getMode() == GameMode.MULTI) {
+            return winner.getName() + "님 우승!";
+        }
+        return winner.getName() + "님 승리!";
     }
 
     /**

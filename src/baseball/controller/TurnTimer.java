@@ -17,6 +17,8 @@ public class TurnTimer {
     private final IntConsumer onTick;
     private final Runnable onTimeout;
     private int remaining;
+    /** pause()로 일시 정지된 상태인지 여부 */
+    private boolean paused;
 
     /**
      * @param onTick    남은 시간(초)이 바뀔 때마다 호출할 동작
@@ -30,6 +32,7 @@ public class TurnTimer {
 
     /** 제한 시간을 처음부터 다시 측정한다. 턴이 시작될 때마다 호출한다. */
     public void start() {
+        paused = false;
         remaining = TIME_LIMIT_SECONDS;
         onTick.accept(remaining);
         timer.restart();
@@ -37,7 +40,27 @@ public class TurnTimer {
 
     /** 시간 측정을 중지한다. 게임이 종료되거나 무효 처리될 때 호출한다. */
     public void stop() {
+        paused = false;
         timer.stop();
+    }
+
+    /**
+     * 측정 중이면 남은 시간을 유지한 채 일시 정지한다.
+     * 창 닫기 확인 창을 띄우는 동안 게임 상태가 바뀌지 않도록 사용한다.
+     */
+    public void pause() {
+        if (timer.isRunning()) {
+            timer.stop();
+            paused = true;
+        }
+    }
+
+    /** pause()로 일시 정지한 경우에만 남은 시간부터 측정을 재개한다. */
+    public void resume() {
+        if (paused) {
+            paused = false;
+            timer.start();
+        }
     }
 
     /** @return 남은 시간 (초) */
