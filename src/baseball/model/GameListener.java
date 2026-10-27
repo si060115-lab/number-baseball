@@ -1,11 +1,21 @@
 package baseball.model;
 
+import java.util.List;
+
 /**
  * GameSession의 상태 변화를 전달받는 인터페이스 (Observer 패턴).
  * 모델은 화면을 직접 참조하지 않고 이 인터페이스로만 변화를 알린다.
  * 필요한 이벤트만 구현할 수 있도록 기본 구현은 비워 둔다.
  */
 public interface GameListener {
+
+    /**
+     * 턴 순서가 결정되었을 때 호출된다. 첫 번째 턴이 시작되기 직전에 한 번 발생한다.
+     *
+     * @param order 턴 순서대로 정렬된 유저 목록
+     */
+    default void onTurnOrderDecided(List<Player> order) {
+    }
 
     /**
      * 새 턴이 시작되었을 때 호출된다.

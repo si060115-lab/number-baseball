@@ -1,6 +1,7 @@
 package baseball.model;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Random;
 import java.util.function.Consumer;
@@ -8,16 +9,18 @@ import java.util.function.Consumer;
 /**
  * 한 판의 게임 진행 상태와 규칙을 관리한다.
  * 화면과 독립적으로 동작하며, 상태 변화는 GameListener를 통해 알린다.
- * 현재는 PvE 모드만 지원하며, 1:1 PvP와 다인 PvP 모드는 4·5단계에서 추가한다.
+ * 현재는 PvE 모드와 1:1 PvP 모드를 지원하며, 다인 PvP 모드는 5단계에서 추가한다.
  */
 public class GameSession {
     private final GameMode mode;
-    /** 참가 유저 (컴퓨터 제외) */
+    /** 참가 유저 (컴퓨터 제외, 입력 순서 유지) */
     private final List<Player> players;
     /** PvE 모드의 상대. 그 외 모드는 null */
     private final Player computer;
-    /** 턴 순서 */
+    /** 턴 순서. PvP 모드는 턴 시작 시 무작위로 섞는다. */
     private final List<Player> turnOrder;
+    /** 컴퓨터 숫자 생성과 턴 순서 결정에 사용하는 난수 생성기 */
+    private final Random random;
     private final List<GameListener> listeners = new ArrayList<>();
 
     private GamePhase phase = GamePhase.SETUP;
@@ -40,13 +43,14 @@ public class GameSession {
         if (!mode.isValidPlayerCount(players.size())) {
             throw new IllegalArgumentException(mode + " 참가 인원이 올바르지 않습니다: " + players.size() + "명");
         }
-        if (mode != GameMode.PVE) {
+        if (mode == GameMode.MULTI) {
             throw new UnsupportedOperationException("아직 지원하지 않는 모드입니다: " + mode);
         }
         this.mode = mode;
         this.players = List.copyOf(players);
         this.turnOrder = new ArrayList<>(players);
-        this.computer = Player.computer(SecretNumber.random(rnd));
+        this.random = rnd;
+        this.computer = (mode == GameMode.PVE) ? Player.computer(SecretNumber.random(rnd)) : null;
     }
 
     /**
@@ -59,15 +63,73 @@ public class GameSession {
     }
 
     /**
-     * 턴 진행을 시작하고 첫 번째 턴을 알린다.
+     * 유저의 비밀 숫자를 설정한다. PvP 모드의 설정 단계에서만 사용한다.
      *
-     * @throws IllegalStateException 설정 단계가 아닌 경우
+     * @param player 비밀 숫자를 설정할 유저
+     * @param input  입력한 비밀 숫자 문자열
+     * @throws InvalidInputException    input이 형식 규칙을 위반한 경우 (설정되지 않음)
+     * @throws IllegalStateException    설정 단계가 아니거나 PvE 모드인 경우
+     * @throws IllegalArgumentException 참가자가 아닌 경우
+     */
+    public void setSecret(Player player, String input) {
+        requirePhase(GamePhase.SETUP);
+        if (mode == GameMode.PVE) {
+            throw new IllegalStateException("PvE 모드는 유저가 비밀 숫자를 설정하지 않습니다.");
+        }
+        if (!players.contains(player)) {
+            throw new IllegalArgumentException("참가자가 아닙니다: " + player.getName());
+        }
+        player.setSecret(SecretNumber.parse(input));
+    }
+
+    /**
+     * 모든 유저의 비밀 숫자가 설정되었는지 확인한다.
+     *
+     * @return 모두 설정되었으면 true. PvE 모드는 설정 단계가 없으므로 항상 true
+     */
+    public boolean isAllSecretsSet() {
+        if (mode == GameMode.PVE) {
+            return true;
+        }
+        for (Player p : players) {
+            if (!p.hasSecret()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 턴 진행을 시작한다.
+     * PvP 모드는 턴 순서를 무작위로 정한 뒤 순서를 알리고, 첫 번째 턴을 시작한다.
+     *
+     * @throws IllegalStateException 설정 단계가 아니거나 비밀 숫자를 설정하지 않은 유저가 있는 경우
      */
     public void startTurns() {
         requirePhase(GamePhase.SETUP);
+        if (!isAllSecretsSet()) {
+            throw new IllegalStateException("비밀 숫자를 설정하지 않은 유저가 있습니다.");
+        }
+        if (mode != GameMode.PVE) {
+            Collections.shuffle(turnOrder, random);
+        }
         phase = GamePhase.PLAYING;
         turnIndex = 0;
+        List<Player> order = List.copyOf(turnOrder);
+        fire(l -> l.onTurnOrderDecided(order));
         fireTurnStarted();
+    }
+
+    /**
+     * 게임을 무효 처리한다. 무효 처리된 게임은 전적에 반영하지 않는다.
+     * 이미 종료되었거나 무효 처리된 게임에서는 아무 동작도 하지 않는다.
+     */
+    public void abort() {
+        if (phase == GamePhase.FINISHED || phase == GamePhase.ABORTED) {
+            return;
+        }
+        phase = GamePhase.ABORTED;
+        fire(GameListener::onAborted);
     }
 
     /**
@@ -122,7 +184,7 @@ public class GameSession {
         fire(l -> l.onGuessJudged(attacker, target, guessText, result));
 
         if (result.isCorrect()) {
-            // PvE: 컴퓨터의 숫자를 맞히면 승리. 1:1·다인 모드의 처리는 4·5단계에서 추가한다.
+            // PvE·1:1 PvP: 상대의 숫자를 맞힌 유저가 승리한다. 다인 PvP 모드의 탈락 처리는 5단계에서 추가한다.
             finish(attacker);
         } else if (mode == GameMode.PVE && attempts >= GameRules.PVE_MAX_ATTEMPTS) {
             // PvE: 시도 횟수를 모두 사용하면 실패
@@ -143,9 +205,14 @@ public class GameSession {
         return phase;
     }
 
-    /** @return 참가 유저 목록 (수정 불가) */
+    /** @return 참가 유저 목록 (입력 순서, 수정 불가) */
     public List<Player> getPlayers() {
         return players;
+    }
+
+    /** @return 턴 순서대로 정렬된 유저 목록 (수정 불가) */
+    public List<Player> getTurnOrder() {
+        return List.copyOf(turnOrder);
     }
 
     /** @return PvE 모드의 컴퓨터 참가자. 그 외 모드는 null */
