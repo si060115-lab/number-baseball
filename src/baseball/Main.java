@@ -4,7 +4,7 @@ import baseball.view.MainFrame;
 import javax.swing.SwingUtilities;
 
 /**
- * 프로그램 진입점. 메인 창을 생성하고 시작 화면을 표시한다.
+ * 프로그램 진입점. 메인 창을 생성하고 시작 화면을 표시한다.<>
  */
 public class Main {
     public static void main(String[] args) {
