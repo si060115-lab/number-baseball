@@ -13,3 +13,11 @@ stats.csv
 # 운영체제가 만드는 파일
 Thumbs.db
 .DS_Store
+
+# 제출용 파일 (CP4)
+api_manual/
+submit/
+*.zip
+ssd_ip_cp4_*.jar
+ssd_ip_cp4_*.pdf
+
