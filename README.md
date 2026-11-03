@@ -9,7 +9,7 @@ Java Swing으로 만든 숫자야구 게임이다.
 java -jar number-baseball.jar
 ```
 
-Java 17 이상이 필요하다. 전적 파일(stats.csv)은 실행한 위치에 생성된다.
+Java 25 이상이 필요하다. 전적 파일(stats.csv)은 실행한 위치에 생성된다.
 
 ## 게임 규칙
 
